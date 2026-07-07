@@ -35,3 +35,14 @@ def test__should_return_unprocessable_entity__when_formula_field_is_missing():
     response = client.post("/isotope-pattern/api/compute", json={})
 
     assert response.status_code == 422
+
+
+def test__should_allow_cross_origin_requests__when_origin_header_is_present():
+
+    response = client.post(
+        "/isotope-pattern/api/compute",
+        json={"formula": "C2H5OH"},
+        headers={"Origin": "https://isotope-pattern-ui.netlify.app"},
+    )
+
+    assert response.headers["access-control-allow-origin"] == "*"
