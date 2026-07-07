@@ -1,0 +1,32 @@
+# Render Blueprint spec: https://render.com/docs/blueprint-spec
+#
+# Defines the two persistent environments for this service. Both have
+# autoDeploy disabled on purpose: deploys are triggered explicitly by
+# ci-pull-request.yaml (test) and ci-master.yaml (prod) via the Render API,
+# not by pushes to the tracked branch.
+#
+# NOTE: after applying this Blueprint via Render's "New > Blueprint", turn
+# OFF "Auto-Sync" for the Blueprint. ci-pull-request.yaml repoints the test
+# service's `branch` per PR via the API; an auto-syncing Blueprint would
+# fight that by resetting it back to what's declared here.
+services:
+  - type: web
+    name: isotope-pattern-service-test
+    runtime: python
+    plan: free
+    region: oregon
+    branch: master
+    autoDeploy: false
+    buildCommand: pip install .
+    startCommand: uvicorn isotope_pattern_service.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+  - type: web
+    name: isotope-pattern-service-prod
+    runtime: python
+    plan: free
+    region: oregon
+    branch: master
+    autoDeploy: false
+    buildCommand: pip install .
+    startCommand: uvicorn isotope_pattern_service.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
