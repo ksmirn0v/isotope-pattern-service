@@ -14,7 +14,7 @@ services:
     name: isotope-pattern-service-test
     runtime: python
     plan: free
-    region: oregon
+    region: frankfurt
     branch: master
     autoDeploy: false
     buildCommand: pip install .
@@ -24,7 +24,7 @@ services:
     name: isotope-pattern-service-prod
     runtime: python
     plan: free
-    region: oregon
+    region: frankfurt
     branch: master
     autoDeploy: false
     buildCommand: pip install .
