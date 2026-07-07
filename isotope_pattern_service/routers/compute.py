@@ -5,7 +5,7 @@ from isotope_pattern_lib import api as isotope_pattern_api
 
 from isotope_pattern_service.models import ComputeRequest, Isotope, IsotopeFormula
 
-router = APIRouter(prefix="/isotope-patterns/api")
+router = APIRouter(prefix="/isotope-pattern/api")
 
 
 @router.post("/compute", response_model=List[IsotopeFormula])

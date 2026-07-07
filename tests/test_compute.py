@@ -7,7 +7,7 @@ client = TestClient(app)
 
 def test__should_return_isotope_patterns__when_formula_is_valid():
 
-    response = client.post("/isotope-patterns/api/compute", json={"formula": "C2H5OH"})
+    response = client.post("/isotope-pattern/api/compute", json={"formula": "C2H5OH"})
 
     assert response.status_code == 200
 
@@ -24,7 +24,7 @@ def test__should_return_isotope_patterns__when_formula_is_valid():
 
 def test__should_return_bad_request__when_formula_contains_unknown_element():
 
-    response = client.post("/isotope-patterns/api/compute", json={"formula": "Xx2"})
+    response = client.post("/isotope-pattern/api/compute", json={"formula": "Xx2"})
 
     assert response.status_code == 400
     assert "Xx" in response.json()["detail"]
@@ -32,6 +32,6 @@ def test__should_return_bad_request__when_formula_contains_unknown_element():
 
 def test__should_return_unprocessable_entity__when_formula_field_is_missing():
 
-    response = client.post("/isotope-patterns/api/compute", json={})
+    response = client.post("/isotope-pattern/api/compute", json={})
 
     assert response.status_code == 422

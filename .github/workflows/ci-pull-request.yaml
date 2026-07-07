@@ -2,6 +2,7 @@ name: ci-pull-request
 env:
   SONARCLOUD_TASK_URL: https://sonarcloud.io/api/ce/task
   SONARCLOUD_PROJECT_STATUS_URL: https://sonarcloud.io/api/qualitygates/project_status
+  RENDER_API_URL: https://api.render.com/v1
   UV_PYTHON: "3.12"
 on:
   pull_request:
@@ -9,6 +10,22 @@ on:
       - master
     types: [opened, edited, synchronize, reopened]
 jobs:
+  validate-pr-title:
+    runs-on: ubuntu-latest
+    outputs:
+      next_version: ${{ steps.compute.outputs.version }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: compute next version from PR title
+        id: compute
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          version=$(.github/scripts/compute-next-version.sh "$PR_TITLE")
+          echo "version=${version}" | tee -a "$GITHUB_OUTPUT"
   test-matrix:
     runs-on: ubuntu-latest
     strategy:
@@ -113,3 +130,91 @@ jobs:
             echo "The quality gate was not passed"
             exit 1
           fi
+  e2e-deploy:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: point test service at this PR's branch
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_TEST_SERVICE_ID: ${{ secrets.RENDER_TEST_SERVICE_ID }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          curl -sf -X PATCH "${{ env.RENDER_API_URL }}/services/${RENDER_TEST_SERVICE_ID}" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\": \"${PR_BRANCH}\"}"
+      - name: trigger deploy
+        id: deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_TEST_SERVICE_ID: ${{ secrets.RENDER_TEST_SERVICE_ID }}
+        run: |
+          deploy_id=$(curl -sf -X POST "${{ env.RENDER_API_URL }}/services/${RENDER_TEST_SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": "do_not_clear"}' | jq -r '.id')
+          echo "deploy_id=${deploy_id}" | tee -a "$GITHUB_OUTPUT"
+      - name: wait for deploy to go live
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_TEST_SERVICE_ID: ${{ secrets.RENDER_TEST_SERVICE_ID }}
+          DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
+        run: |
+          for i in $(seq 1 60); do
+            status=$(curl -sf "${{ env.RENDER_API_URL }}/services/${RENDER_TEST_SERVICE_ID}/deploys/${DEPLOY_ID}" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" | jq -r '.status')
+            echo "deploy status: ${status}"
+            case "$status" in
+              live) exit 0 ;;
+              build_failed|update_failed|canceled|deactivated)
+                echo "deploy failed with status ${status}"
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "timed out waiting for deploy to go live"
+          exit 1
+      - name: e2e check against a real API request
+        env:
+          RENDER_TEST_SERVICE_URL: ${{ secrets.RENDER_TEST_SERVICE_URL }}
+        run: |
+          status_code="000"
+          for i in $(seq 1 10); do
+            status_code=$(curl -s -o /tmp/response.json -w "%{http_code}" -X POST \
+              "${RENDER_TEST_SERVICE_URL}/isotope-pattern/api/compute" \
+              -H 'Content-Type: application/json' \
+              -d '{"formula":"C2H5OH"}') || status_code="000"
+            if [ "$status_code" = "200" ]; then
+              break
+            fi
+            echo "got HTTP ${status_code}, retrying in 10s (attempt ${i}/10, service may still be cold-starting)"
+            sleep 10
+          done
+
+          echo "response body:"
+          cat /tmp/response.json
+
+          if [ "$status_code" != "200" ]; then
+            echo "test environment did not return 200 after retries"
+            exit 1
+          fi
+
+          python3 -c "
+          import json
+          data = json.load(open('/tmp/response.json'))
+          assert isinstance(data, list) and len(data) > 0, 'expected a non-empty list of isotope patterns'
+          assert all({'name', 'mass', 'probability', 'isotopes'} <= p.keys() for p in data), 'malformed isotope pattern entry'
+          print('e2e check passed')
+          "
+      - name: reset test service branch to master
+        if: always()
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_TEST_SERVICE_ID: ${{ secrets.RENDER_TEST_SERVICE_ID }}
+        run: |
+          curl -sf -X PATCH "${{ env.RENDER_API_URL }}/services/${RENDER_TEST_SERVICE_ID}" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"branch": "master"}'

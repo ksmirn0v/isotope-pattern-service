@@ -30,7 +30,7 @@ uv run uvicorn isotope_pattern_service.main:app --reload
 
 ## API ##
 
-### `POST /isotope-patterns/api/compute` ###
+### `POST /isotope-pattern/api/compute` ###
 
 Computes the isotope pattern of a molecular formula by calling
 `isotope_pattern_lib.api.compute_isotope_pattern`.
