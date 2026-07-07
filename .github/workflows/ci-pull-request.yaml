@@ -1,0 +1,115 @@
+name: ci-pull-request
+env:
+  SONARCLOUD_TASK_URL: https://sonarcloud.io/api/ce/task
+  SONARCLOUD_PROJECT_STATUS_URL: https://sonarcloud.io/api/qualitygates/project_status
+  UV_PYTHON: "3.12"
+on:
+  pull_request:
+    branches:
+      - master
+    types: [opened, edited, synchronize, reopened]
+jobs:
+  test-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: running tests
+        run: |
+          uv run --python ${{ matrix.python-version }} --group test pytest tests --cov=isotope_pattern_service --cov-report=xml:./artifacts/test-report/coverage-report.xml
+      - name: saving artifacts
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ./artifacts
+  # Fan-in gate: matrix jobs report as "test-matrix (3.9)" etc, not a single
+  # "tests" check, which breaks branch protection rules pinned to that name.
+  # This job restores a single, stably-named required check.
+  tests:
+    needs: test-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: all python version matrix legs passed
+        run: echo "All test-matrix legs passed"
+  code-analysis:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: loading artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+      - name: SonarCloud scan
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          SONAR_TOKEN: ${{secrets.SONARCLOUD_TOKEN}}
+        run: |
+          wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.1.0.6389-linux-x64.zip
+          unzip ./sonar-scanner-cli-8.1.0.6389-linux-x64.zip
+          rm ./sonar-scanner-cli-8.1.0.6389-linux-x64.zip
+          mv ./sonar-scanner-8.1.0.6389-linux-x64 /opt
+          mv /opt/sonar-scanner-8.1.0.6389-linux-x64 /opt/sonar-scanner
+          /opt/sonar-scanner/bin/sonar-scanner \
+            -Dsonar.organization=${{secrets.SONARCLOUD_ORGANIZATION}} \
+            -Dsonar.projectKey=${{secrets.SONARCLOUD_PROJECT_KEY}} \
+            -Dsonar.sources=isotope_pattern_service \
+            -Dsonar.tests=tests \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.python.coverage.reportPaths=test-report/coverage-report.xml \
+            -Dsonar.exclusions=test-report/** \
+            -Dsonar.pullrequest.key=${{github.event.pull_request.number}}
+      - name: SonarCloud quality gate evaluation
+        env:
+          SONAR_TOKEN: ${{secrets.SONARCLOUD_TOKEN}}
+        run: |
+          taskId=$(awk -v FS="ceTaskId=" 'NF>1{print $2}' .scannerwork/report-task.txt)
+          echo "taskId=${taskId}"
+
+          status="PENDING"
+          for i in $(seq 1 30); do
+            taskResponse=$(curl -s -u "${SONAR_TOKEN}:" --location --request GET "${{env.SONARCLOUD_TASK_URL}}?id=${taskId}")
+            status=$(echo "$taskResponse" | jq -r '.task.status')
+            echo "CE task status: ${status}"
+            if [ "$status" = "SUCCESS" ] || [ "$status" = "FAILED" ] || [ "$status" = "CANCELED" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$status" != "SUCCESS" ]; then
+            echo "SonarCloud analysis task did not complete successfully (status: ${status})"
+            echo "Full task response: ${taskResponse}"
+            exit 1
+          fi
+
+          analysisId=$(echo "$taskResponse" | jq -r '.task.analysisId')
+          echo "analysisId=${analysisId}"
+          qualityGateResponse=$(curl -s -u "${SONAR_TOKEN}:" --location --request GET "${{env.SONARCLOUD_PROJECT_STATUS_URL}}?analysisId=${analysisId}")
+          qualityGateStatus=$(echo "$qualityGateResponse" | jq -r '.projectStatus.status // empty')
+          echo "Quality gate status: ${qualityGateStatus:-<none>}"
+
+          if [ -z "$qualityGateStatus" ]; then
+            echo "Could not read quality gate status, full response: ${qualityGateResponse}"
+            exit 1
+          fi
+
+          if [ "$qualityGateStatus" = "ERROR" ]; then
+            echo "The quality gate was not passed"
+            exit 1
+          fi
